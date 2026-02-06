@@ -10,11 +10,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-# Берём токен из переменной окружения Render
+# Получаем токен из переменной окружения Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("Не найден BOT_TOKEN. Добавь его в Environment Variables на Render.")
-
+    raise ValueError("BOT_TOKEN не найден. Добавь его в Environment Variables в Render.")
 PRODUCTS: Dict[str, Dict[str, Any]] = {
     "film_60x3": {
         "title": "Плёнка 60×3 м (рулон)",
