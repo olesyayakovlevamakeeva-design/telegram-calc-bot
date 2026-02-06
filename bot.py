@@ -1,6 +1,7 @@
 import os
 import math
 import asyncio
+import threading
 from typing import Dict, Any, List
 
 from aiogram import Bot, Dispatcher, F
@@ -10,10 +11,20 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-# Получаем токен из переменной окружения Render
+from flask import Flask
+
+
+# =========================
+# ENV
+# =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден. Добавь его в Environment Variables в Render.")
+
+
+# =========================
+# PRODUCTS
+# =========================
 PRODUCTS: Dict[str, Dict[str, Any]] = {
     "film_60x3": {
         "title": "Плёнка 60×3 м (рулон)",
@@ -33,6 +44,19 @@ PRODUCTS: Dict[str, Dict[str, Any]] = {
             {"label": "18 шт/уп", "pack_area": 0.3 * 0.6 * 18, "pack_name": "упаковок"},
         ],
     },
+
+    # ✅ НОВОЕ: Ламинат
+    # Размер 91.44×15.24 см, 18 шт/уп
+    # Площадь 1 шт = 0.9144 * 0.1524 = 0.13935456 м²
+    # Площадь уп = *18 = 2.50838208 ≈ 2.508 м²
+    "laminate": {
+        "title": "Ламинат 91.44×15.24 см (18 шт/уп)",
+        "pack_area": 2.508,          # м² в упаковке
+        "pack_name": "упаковок",
+        "waste_percent": 0.10,       # 10%
+        "waste_default_on": True,    # по умолчанию запас включён
+    },
+
     "all_products": {
         "title": "Рассчитать все товары сразу",
         "all": True,
@@ -40,8 +64,13 @@ PRODUCTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# =========================
+# FSM STATES
+# =========================
 class CalcState(StatesGroup):
+    choose_waste = State()          # только для ламината: включить/выключить запас
     choose_input_mode = State()
+
     waiting_total_area = State()
 
     waiting_surface_name = State()
@@ -50,8 +79,8 @@ class CalcState(StatesGroup):
     waiting_surface_sides = State()
 
     waiting_ask_price = State()
-    waiting_price_single = State()
 
+    waiting_price_single = State()
     waiting_price_all_film = State()
     waiting_price_all_30x30 = State()
     waiting_price_all_30x60_10 = State()
@@ -61,18 +90,21 @@ class CalcState(StatesGroup):
 dp = Dispatcher()
 
 
+# =========================
+# TEXT + KEYBOARDS
+# =========================
 def welcome_text() -> str:
     return (
-        "✨ the_all4u — самоклеящиеся покрытия\n\n"
+        "the_all4u — самоклеящиеся покрытия\n\n"
         "Не знаете, сколько материала нужно?\n"
         "Я рассчитаю всё за вас:\n\n"
-        "✔ плёнка 60 см *3м\n"
-        "✔ панели 30×30 см\n"
-        "✔ панели 30×60 см\n"
-        "✔ автоматический подбор упаковок\n"
-        "✔ запас 10%\n"
-        "✔ расчёт стоимости в ₽\n\n"
-        "Выберите вариант расчёта и получите точный результат 👌"
+        "• плёнка 60×3 м\n"
+        "• панели 30×30 см\n"
+        "• панели 30×60 см (автоподбор)\n"
+        "• ламинат 91.44×15.24 (18 шт/уп)\n"
+        "• запас 10% (для ламината — можно включать/выключать)\n"
+        "• расчёт стоимости\n\n"
+        "Выберите вариант расчёта 👇"
     )
 
 
@@ -81,7 +113,8 @@ def main_menu_kb():
     kb.button(text="1) Плёнка 60×3 м", callback_data="calc:film_60x3")
     kb.button(text="2) Панели 30×30 (20 шт/уп)", callback_data="calc:panel_30x30_20")
     kb.button(text="3) Панели 30×60 (автоподбор)", callback_data="calc:panel_30x60_auto")
-    kb.button(text="4) Рассчитать все товары", callback_data="calc:all_products")
+    kb.button(text="4) Ламинат 91.44×15.24 (18 шт/уп)", callback_data="calc:laminate")
+    kb.button(text="5) Рассчитать все товары", callback_data="calc:all_products")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -90,7 +123,7 @@ def input_mode_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="Быстрый ввод общей площади (м²)", callback_data="mode:total")
     kb.button(text="Добавить поверхности (мебель/полки/стол)", callback_data="mode:surfaces")
-    kb.button(text="⬅ Назад к выбору товара", callback_data="back:products")
+    kb.button(text="⬅️ Назад к выбору товара", callback_data="back:products")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -99,7 +132,7 @@ def surfaces_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить ещё поверхность", callback_data="surface:add")
     kb.button(text="✅ Завершить и рассчитать", callback_data="surface:finish")
-    kb.button(text="🗑 Очистить список", callback_data="surface:clear")
+    kb.button(text="🧹 Очистить список", callback_data="surface:clear")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -114,12 +147,25 @@ def sides_kb():
 
 def price_choice_kb():
     kb = InlineKeyboardBuilder()
-    kb.button(text="💰 Да, рассчитать стоимость", callback_data="price:yes")
-    kb.button(text="➡️ Нет, только количество", callback_data="price:no")
+    kb.button(text="✅ Да, рассчитать стоимость", callback_data="price:yes")
+    kb.button(text="❌ Нет, только количество", callback_data="price:no")
     kb.adjust(1)
     return kb.as_markup()
 
 
+def waste_toggle_kb(is_on: bool):
+    kb = InlineKeyboardBuilder()
+    status = "ВКЛ ✅" if is_on else "ВЫКЛ ❌"
+    kb.button(text=f"Запас 10%: {status} (нажми чтобы переключить)", callback_data="waste:toggle")
+    kb.button(text="➡️ Далее", callback_data="waste:continue")
+    kb.button(text="⬅️ Назад к выбору товара", callback_data="back:products")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# =========================
+# HELPERS
+# =========================
 def parse_float(text: str) -> float:
     v = float(text.strip().replace(",", "."))
     if v <= 0:
@@ -127,7 +173,7 @@ def parse_float(text: str) -> float:
     return v
 
 
-def with_reserve(area: float, reserve: float = 0.10) -> float:
+def with_reserve(area: float, reserve: float) -> float:
     return area * (1 + reserve)
 
 
@@ -143,10 +189,14 @@ def money(n: float) -> str:
     return f"{n:,.2f}".replace(",", " ") + " ₽"
 
 
-def calc_counts_for_product(product_key: str, area: float) -> Dict[str, Any]:
+# =========================
+# CALC CORE
+# =========================
+def calc_counts_for_product(product_key: str, area: float, reserve_percent: float) -> Dict[str, Any]:
     p = PRODUCTS[product_key]
-    target = with_reserve(area, 0.10)
+    target = with_reserve(area, reserve_percent)
 
+    # автоподбор для 30×60
     if p.get("auto_pick"):
         variants = []
         best = None
@@ -160,7 +210,7 @@ def calc_counts_for_product(product_key: str, area: float) -> Dict[str, Any]:
                 "count": cnt,
                 "pack_name": v["pack_name"],
                 "covered": covered,
-                "over": over
+                "over": over,
             }
             variants.append(item)
             if best_over is None or over < best_over:
@@ -170,48 +220,62 @@ def calc_counts_for_product(product_key: str, area: float) -> Dict[str, Any]:
             "type": "auto_pick",
             "title": p["title"],
             "target_area": target,
+            "reserve_percent": reserve_percent,
             "variants": variants,
-            "best": best
+            "best": best,
         }
 
+    # рассчитать все товары
     if p.get("all"):
+        # для all_products резерв всегда 10%
+        rp = 0.10
+        target_all = with_reserve(area, rp)
         return {
             "type": "all",
-            "target_area": target,
-            "film_cnt": packs_needed(target, PRODUCTS["film_60x3"]["pack_area"]),
-            "p3030_cnt": packs_needed(target, PRODUCTS["panel_30x30_20"]["pack_area"]),
-            "p3060_10_cnt": packs_needed(target, 0.3 * 0.6 * 10),
-            "p3060_18_cnt": packs_needed(target, 0.3 * 0.6 * 18),
+            "target_area": target_all,
+            "reserve_percent": rp,
+            "film_cnt": packs_needed(target_all, PRODUCTS["film_60x3"]["pack_area"]),
+            "p3030_cnt": packs_needed(target_all, PRODUCTS["panel_30x30_20"]["pack_area"]),
+            "p3060_10_cnt": packs_needed(target_all, 0.3 * 0.6 * 10),
+            "p3060_18_cnt": packs_needed(target_all, 0.3 * 0.6 * 18),
         }
 
+    # одиночный товар
     cnt = packs_needed(target, p["pack_area"])
     covered = cnt * p["pack_area"]
     return {
         "type": "single",
         "title": p["title"],
         "target_area": target,
+        "reserve_percent": reserve_percent,
         "count": cnt,
         "pack_name": p["pack_name"],
-        "covered": covered
+        "covered": covered,
     }
 
 
 def render_counts(area: float, counts: Dict[str, Any]) -> str:
+    rp = float(counts.get("reserve_percent", 0.10))
+    if rp > 0:
+        reserve_line = f"С запасом {int(rp * 100)}%: {fmt(counts['target_area'])} м²"
+    else:
+        reserve_line = f"Без запаса: {fmt(counts['target_area'])} м²"
+
     header = (
-        f"📐 Площадь: {fmt(area)} м²\n"
-        f"📦 С запасом 10%: {fmt(counts['target_area'])} м²\n\n"
+        f"📏 Площадь: {fmt(area)} м²\n"
+        f"🧮 {reserve_line}\n\n"
     )
 
     if counts["type"] == "single":
         return (
-            header +
-            f"🔹 {counts['title']}\n"
-            f"Нужно: {counts['count']} {counts['pack_name']}\n"
-            f"Покрытие: ~ {fmt(counts['covered'])} м²"
+            header
+            + f"🧱 {counts['title']}\n"
+            + f"Нужно: {counts['count']} {counts['pack_name']}\n"
+            + f"Покрытие: ~ {fmt(counts['covered'])} м²"
         )
 
     if counts["type"] == "auto_pick":
-        lines = [header + f"🔹 {counts['title']}"]
+        lines = [header + f"🧱 {counts['title']}"]
         for v in counts["variants"]:
             lines.append(f"• {v['label']}: {v['count']} упаковок (покроет ~ {fmt(v['covered'])} м²)")
         lines.append("")
@@ -219,12 +283,12 @@ def render_counts(area: float, counts: Dict[str, Any]) -> str:
         return "\n".join(lines)
 
     return (
-        header +
-        "📦 Расчёт по всем товарам:\n\n"
-        f"1) Плёнка 60×3 м: {counts['film_cnt']} рулон(ов)\n"
-        f"2) Панели 30×30 (20 шт/уп): {counts['p3030_cnt']} упаковок\n"
-        f"3) Панели 30×60 (10 шт/уп): {counts['p3060_10_cnt']} упаковок\n"
-        f"4) Панели 30×60 (18 шт/уп): {counts['p3060_18_cnt']} упаковок"
+        header
+        + "🧾 Расчёт по всем товарам:\n\n"
+        + f"1) Плёнка 60×3 м: {counts['film_cnt']} рулон(ов)\n"
+        + f"2) Панели 30×30 (20 шт/уп): {counts['p3030_cnt']} упаковок\n"
+        + f"3) Панели 30×60 (10 шт/уп): {counts['p3060_10_cnt']} упаковок\n"
+        + f"4) Панели 30×60 (18 шт/уп): {counts['p3060_18_cnt']} упаковок"
     )
 
 
@@ -245,6 +309,9 @@ def surfaces_summary(data_surfaces: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# =========================
+# HANDLERS
+# =========================
 @dp.message(CommandStart())
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
@@ -266,12 +333,46 @@ async def choose_product(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(product_key=key, surfaces=[])
-    await state.set_state(CalcState.choose_input_mode)
 
+    # ✅ Только для ламината — спросим про запас (вкл/выкл)
+    if key == "laminate":
+        default_on = bool(PRODUCTS["laminate"].get("waste_default_on", True))
+        await state.update_data(reserve_percent=(0.10 if default_on else 0.0))
+        await state.set_state(CalcState.choose_waste)
+        await callback.message.answer(
+            f"Вы выбрали: {PRODUCTS[key]['title']}\n\nНужен запас 10%?",
+            reply_markup=waste_toggle_kb(default_on),
+        )
+        await callback.answer()
+        return
+
+    # для остальных — всегда 10%
+    await state.update_data(reserve_percent=0.10)
+    await state.set_state(CalcState.choose_input_mode)
     await callback.message.answer(
         f"Вы выбрали: {PRODUCTS[key]['title']}\n\nКак хотите ввести площадь?",
         reply_markup=input_mode_kb()
     )
+    await callback.answer()
+
+
+@dp.callback_query(CalcState.choose_waste, F.data == "waste:toggle")
+async def waste_toggle(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    rp = float(data.get("reserve_percent", 0.10))
+    new_rp = 0.0 if rp > 0 else 0.10
+    await state.update_data(reserve_percent=new_rp)
+    await callback.message.answer(
+        f"Запас для ламината теперь: {'ВКЛ ✅ (10%)' if new_rp > 0 else 'ВЫКЛ ❌ (0%)'}",
+        reply_markup=waste_toggle_kb(new_rp > 0),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(CalcState.choose_waste, F.data == "waste:continue")
+async def waste_continue(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(CalcState.choose_input_mode)
+    await callback.message.answer("Как хотите ввести площадь?", reply_markup=input_mode_kb())
     await callback.answer()
 
 
@@ -299,11 +400,15 @@ async def process_total_area(message: Message, state: FSMContext):
 
     data = await state.get_data()
     product_key = data.get("product_key", "all_products")
-    counts = calc_counts_for_product(product_key, area)
+    reserve_percent = float(data.get("reserve_percent", 0.10))
+
+    counts = calc_counts_for_product(product_key, area, reserve_percent)
     await state.update_data(last_area=area, last_counts=counts)
 
-    await message.answer(render_counts(area, counts) + "\n\nХотите рассчитать стоимость в рублях?",
-                         reply_markup=price_choice_kb())
+    await message.answer(
+        render_counts(area, counts) + "\n\nХотите рассчитать стоимость в рублях?",
+        reply_markup=price_choice_kb()
+    )
     await state.set_state(CalcState.waiting_ask_price)
 
 
@@ -337,7 +442,6 @@ async def surface_width(message: Message, state: FSMContext):
     except Exception:
         await message.answer("Введите корректную ширину в см.")
         return
-
     await state.update_data(current_width_cm=width_cm)
     await state.set_state(CalcState.waiting_surface_sides)
     await message.answer("Сколько сторон оклеивать?", reply_markup=sides_kb())
@@ -346,20 +450,28 @@ async def surface_width(message: Message, state: FSMContext):
 @dp.callback_query(CalcState.waiting_surface_sides, F.data.startswith("sides:"))
 async def surface_sides(callback: CallbackQuery, state: FSMContext):
     sides = int(callback.data.split(":")[1])
-
     data = await state.get_data()
+
     name = data["current_name"]
     length_cm = data["current_length_cm"]
     width_cm = data["current_width_cm"]
 
     area_m2 = (length_cm / 100) * (width_cm / 100) * sides
+
     surfaces = data.get("surfaces", [])
     surfaces.append({
-        "name": name, "length_cm": length_cm, "width_cm": width_cm, "sides": sides, "area": area_m2
+        "name": name,
+        "length_cm": length_cm,
+        "width_cm": width_cm,
+        "sides": sides,
+        "area": area_m2,
     })
 
     await state.update_data(
-        surfaces=surfaces, current_name=None, current_length_cm=None, current_width_cm=None
+        surfaces=surfaces,
+        current_name=None,
+        current_length_cm=None,
+        current_width_cm=None,
     )
 
     await callback.message.answer(
@@ -391,6 +503,7 @@ async def finish_surfaces(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     surfaces = data.get("surfaces", [])
     product_key = data.get("product_key", "all_products")
+    reserve_percent = float(data.get("reserve_percent", 0.10))
 
     if not surfaces:
         await callback.message.answer("Вы ещё не добавили поверхности.")
@@ -398,7 +511,7 @@ async def finish_surfaces(callback: CallbackQuery, state: FSMContext):
         return
 
     total = surfaces_total(surfaces)
-    counts = calc_counts_for_product(product_key, total)
+    counts = calc_counts_for_product(product_key, total, reserve_percent)
     await state.update_data(last_area=total, last_counts=counts)
 
     text = surfaces_summary(surfaces) + "\n\n" + render_counts(total, counts)
@@ -424,7 +537,7 @@ async def price_yes(callback: CallbackQuery, state: FSMContext):
         return
 
     if counts["type"] in ("single", "auto_pick"):
-        await callback.message.answer("Введите цену за 1 упаковку/рулон в ₽ (например: 790)")
+        await callback.message.answer("Введите цену за 1 упаковку/рулон (например: 790)")
         await state.set_state(CalcState.waiting_price_single)
     else:
         await callback.message.answer("Введите цену за 1 рулон плёнки 60×3 м (₽):")
@@ -447,12 +560,12 @@ async def handle_price_single(message: Message, state: FSMContext):
     if counts["type"] == "single":
         qty = counts["count"]
         total_cost = qty * price
-        text = f"💰 Стоимость:\n{qty} × {fmt(price)} ₽ = {money(total_cost)}"
+        text = f"💰 Стоимость:\n{qty} × {fmt(price)} = {money(total_cost)}"
     else:
         qty = counts["best"]["count"]
         label = counts["best"]["label"]
         total_cost = qty * price
-        text = f"💰 Стоимость ({label}):\n{qty} × {fmt(price)} ₽ = {money(total_cost)}"
+        text = f"💰 Стоимость ({label}):\n{qty} × {fmt(price)} = {money(total_cost)}"
 
     await message.answer(text + "\n\nНовый расчёт 👇", reply_markup=main_menu_kb())
     await state.clear()
@@ -522,30 +635,31 @@ async def handle_price_all_3060_18(message: Message, state: FSMContext):
         reply_markup=main_menu_kb()
     )
     await state.clear()
-from flask import Flask
-import threading
 
+
+# =========================
+# FLASK (Render health)
+# =========================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
     return "Bot is running"
 
+
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
+
 async def main():
     bot = Bot(BOT_TOKEN)
-
-    threading.Thread(target=run_web).start()
-
+    threading.Thread(target=run_web, daemon=True).start()
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
 
+if __name__ == "__main__":
+    asyncio.run(main())
 
 
 
