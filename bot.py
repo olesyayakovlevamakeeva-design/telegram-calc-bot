@@ -44,23 +44,13 @@ PRODUCTS: Dict[str, Dict[str, Any]] = {
             {"label": "18 шт/уп", "pack_area": 0.3 * 0.6 * 18, "pack_name": "упаковок"},
         ],
     },
-
-    # ✅ НОВОЕ: Ламинат
-    # Размер 91.44×15.24 см, 18 шт/уп
-    # Площадь 1 шт = 0.9144 * 0.1524 = 0.13935456 м²
-    # Площадь уп = *18 = 2.50838208 ≈ 2.508 м²
     "laminate": {
         "title": "Ламинат 91.44×15.24 см (18 шт/уп)",
-        "pack_area": 2.508,          # м² в упаковке
+        "pack_area": 2.508,          # м²/уп
         "pack_name": "упаковок",
         "waste_percent": 0.10,       # 10%
-        "waste_default_on": True,    # по умолчанию запас включён
+        "waste_default_on": True,    # по умолчанию ВКЛ
     },
-
-    "all_products": {
-        "title": "Рассчитать все товары сразу",
-        "all": True,
-    }
 }
 
 
@@ -68,8 +58,8 @@ PRODUCTS: Dict[str, Dict[str, Any]] = {
 # FSM STATES
 # =========================
 class CalcState(StatesGroup):
-    choose_waste = State()          # только для ламината: включить/выключить запас
-    choose_input_mode = State()
+    choose_waste = State()          # только для ламината
+    choose_input_mode = State()     # для остальных товаров
 
     waiting_total_area = State()
 
@@ -78,13 +68,13 @@ class CalcState(StatesGroup):
     waiting_surface_width = State()
     waiting_surface_sides = State()
 
-    waiting_ask_price = State()
+    ask_openings = State()
+    waiting_opening_type = State()
+    waiting_opening_width = State()
+    waiting_opening_height = State()
 
+    waiting_ask_price = State()
     waiting_price_single = State()
-    waiting_price_all_film = State()
-    waiting_price_all_30x30 = State()
-    waiting_price_all_30x60_10 = State()
-    waiting_price_all_30x60_18 = State()
 
 
 dp = Dispatcher()
@@ -95,16 +85,17 @@ dp = Dispatcher()
 # =========================
 def welcome_text() -> str:
     return (
-        "the_all4u — самоклеящиеся покрытия\n\n"
+        "✨ the_all4u — самоклеящиеся покрытия\n\n"
         "Не знаете, сколько материала нужно?\n"
         "Я рассчитаю всё за вас:\n\n"
-        "• плёнка 60×3 м\n"
-        "• панели 30×30 см\n"
-        "• панели 30×60 см (автоподбор)\n"
-        "• ламинат 91.44×15.24 (18 шт/уп)\n"
-        "• запас 10% (для ламината — можно включать/выключать)\n"
-        "• расчёт стоимости\n\n"
-        "Выберите вариант расчёта 👇"
+        "✔ плёнка 60 см *3м\n"
+        "✔ панели 30×30 см\n"
+        "✔ панели 30×60 см\n"
+        "✔ ламинат 91.44×15.24 см (18 шт/уп)\n"
+        "✔ учёт окон/дверей (проёмов)\n"
+        "✔ запас 10% для ламината (ВКЛ/ВЫКЛ)\n"
+        "✔ расчёт стоимости\n\n"
+        "Выберите вариант расчёта и получите точный результат 👌"
     )
 
 
@@ -114,15 +105,18 @@ def main_menu_kb():
     kb.button(text="2) Панели 30×30 (20 шт/уп)", callback_data="calc:panel_30x30_20")
     kb.button(text="3) Панели 30×60 (автоподбор)", callback_data="calc:panel_30x60_auto")
     kb.button(text="4) Ламинат 91.44×15.24 (18 шт/уп)", callback_data="calc:laminate")
-    kb.button(text="5) Рассчитать все товары", callback_data="calc:all_products")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def input_mode_kb():
+def input_mode_kb(product_key: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="Быстрый ввод общей площади (м²)", callback_data="mode:total")
-    kb.button(text="Добавить поверхности (мебель/полки/стол)", callback_data="mode:surfaces")
+    # Для ламината поверхности не нужны
+    if product_key != "laminate":
+        kb.button(text="Быстрый ввод общей площади (м²)", callback_data="mode:total")
+        kb.button(text="Добавить поверхности (мебель/полки/стол)", callback_data="mode:surfaces")
+    else:
+        kb.button(text="Ввести площадь пола/стены (м²)", callback_data="mode:total")
     kb.button(text="⬅️ Назад к выбору товара", callback_data="back:products")
     kb.adjust(1)
     return kb.as_markup()
@@ -131,7 +125,7 @@ def input_mode_kb():
 def surfaces_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить ещё поверхность", callback_data="surface:add")
-    kb.button(text="✅ Завершить и рассчитать", callback_data="surface:finish")
+    kb.button(text="✅ Завершить и перейти к проёмам", callback_data="surface:finish")
     kb.button(text="🧹 Очистить список", callback_data="surface:clear")
     kb.adjust(1)
     return kb.as_markup()
@@ -149,6 +143,7 @@ def price_choice_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Да, рассчитать стоимость", callback_data="price:yes")
     kb.button(text="❌ Нет, только количество", callback_data="price:no")
+    kb.button(text="⬅️ Назад к выбору товара", callback_data="back:products")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -156,9 +151,57 @@ def price_choice_kb():
 def waste_toggle_kb(is_on: bool):
     kb = InlineKeyboardBuilder()
     status = "ВКЛ ✅" if is_on else "ВЫКЛ ❌"
-    kb.button(text=f"Запас 10%: {status} (нажми чтобы переключить)", callback_data="waste:toggle")
+    kb.button(text=f"Запас 10%: {status} (нажми, чтобы переключить)", callback_data="waste:toggle")
     kb.button(text="➡️ Далее", callback_data="waste:continue")
     kb.button(text="⬅️ Назад к выбору товара", callback_data="back:products")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def openings_yesno_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Нет, без проёмов", callback_data="openings:no")
+    kb.button(text="Да, добавить окна/двери", callback_data="openings:yes")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def opening_mode_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🚪 Добавить дверь", callback_data="opening_type:door")
+    kb.button(text="🪟 Добавить окно", callback_data="opening_type:window")
+    kb.button(text="✅ Готово, рассчитать", callback_data="opening:finish")
+    kb.button(text="🧹 Очистить проёмы", callback_data="opening:clear")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def opening_presets_kb(opening_type: str):
+    kb = InlineKeyboardBuilder()
+
+    if opening_type == "door":
+        # (ширина, высота) в метрах
+        presets = [
+            ("🚪 70×200 см", "0.7", "2.0"),
+            ("🚪 80×200 см", "0.8", "2.0"),
+            ("🚪 90×200 см", "0.9", "2.0"),
+            ("🚪 90×210 см", "0.9", "2.1"),
+        ]
+    else:
+        presets = [
+            ("🪟 120×120 см", "1.2", "1.2"),
+            ("🪟 140×140 см", "1.4", "1.4"),
+            ("🪟 150×150 см", "1.5", "1.5"),
+            ("🪟 180×140 см", "1.8", "1.4"),
+        ]
+
+    for label, w, h in presets:
+        kb.button(text=label, callback_data=f"opening_preset:{opening_type}:{w}:{h}")
+
+    kb.button(text="⌨️ Ввести вручную", callback_data=f"opening_manual:{opening_type}")
+    kb.button(text="⬅️ Назад к выбору типа", callback_data="opening:back_to_type")
+    kb.button(text="✅ Готово, рассчитать", callback_data="opening:finish")
+    kb.button(text="🧹 Очистить проёмы", callback_data="opening:clear")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -166,11 +209,38 @@ def waste_toggle_kb(is_on: bool):
 # =========================
 # HELPERS
 # =========================
+def fmt(n: float) -> str:
+    return f"{n:.2f}".rstrip("0").rstrip(".")
+
+
+def money(n: float) -> str:
+    return f"{n:,.2f}".replace(",", " ") + " ₽"
+
+
 def parse_float(text: str) -> float:
     v = float(text.strip().replace(",", "."))
     if v <= 0:
         raise ValueError
     return v
+
+
+def parse_length_to_m(text: str) -> float:
+    """
+    Поддержка:
+      - 1.2 / 0,8          -> метры
+      - 120 см / 120cm     -> сантиметры
+      - 120 (без единиц)   -> если >=10, считаем см; иначе м
+    """
+    t = text.strip().lower().replace(",", ".")
+    t = t.replace(" ", "")
+    is_cm = ("см" in t) or ("cm" in t)
+    t = t.replace("см", "").replace("cm", "")
+    val = float(t)
+    if val <= 0:
+        raise ValueError
+    if is_cm:
+        return val / 100.0
+    return val / 100.0 if val >= 10 else val
 
 
 def with_reserve(area: float, reserve: float) -> float:
@@ -181,22 +251,43 @@ def packs_needed(area_with_reserve: float, pack_area: float) -> int:
     return math.ceil(area_with_reserve / pack_area)
 
 
-def fmt(n: float) -> str:
-    return f"{n:.2f}".rstrip("0").rstrip(".")
+def openings_total(openings: List[Dict[str, Any]]) -> float:
+    return sum(o["area"] for o in openings)
 
 
-def money(n: float) -> str:
-    return f"{n:,.2f}".replace(",", " ") + " ₽"
+def openings_summary(openings: List[Dict[str, Any]]) -> str:
+    if not openings:
+        return "Проёмы не добавлены."
+    lines = ["Проёмы (окна/двери):"]
+    for i, o in enumerate(openings, 1):
+        icon = "🚪" if o.get("type") == "door" else "🪟"
+        type_ru = "Дверь" if o.get("type") == "door" else "Окно"
+        lines.append(f"{i}) {icon} {type_ru}: {fmt(o['w_m'])} × {fmt(o['h_m'])} м = {fmt(o['area'])} м²")
+    lines.append(f"\nИтого проёмов: {fmt(openings_total(openings))} м²")
+    return "\n".join(lines)
 
 
-# =========================
-# CALC CORE
-# =========================
+def surfaces_total(data_surfaces: List[Dict[str, Any]]) -> float:
+    return sum(item["area"] for item in data_surfaces)
+
+
+def surfaces_summary(data_surfaces: List[Dict[str, Any]]) -> str:
+    if not data_surfaces:
+        return "Пока не добавлено ни одной поверхности."
+    lines = ["Добавленные поверхности:"]
+    for i, s in enumerate(data_surfaces, 1):
+        sides_txt = "2 стороны" if s["sides"] == 2 else "1 сторона"
+        lines.append(
+            f"{i}) {s['name']}: {fmt(s['length_cm'])}×{fmt(s['width_cm'])} см, {sides_txt} = {fmt(s['area'])} м²"
+        )
+    lines.append(f"\nИтого: {fmt(surfaces_total(data_surfaces))} м²")
+    return "\n".join(lines)
+
+
 def calc_counts_for_product(product_key: str, area: float, reserve_percent: float) -> Dict[str, Any]:
     p = PRODUCTS[product_key]
     target = with_reserve(area, reserve_percent)
 
-    # автоподбор для 30×60
     if p.get("auto_pick"):
         variants = []
         best = None
@@ -225,22 +316,6 @@ def calc_counts_for_product(product_key: str, area: float, reserve_percent: floa
             "best": best,
         }
 
-    # рассчитать все товары
-    if p.get("all"):
-        # для all_products резерв всегда 10%
-        rp = 0.10
-        target_all = with_reserve(area, rp)
-        return {
-            "type": "all",
-            "target_area": target_all,
-            "reserve_percent": rp,
-            "film_cnt": packs_needed(target_all, PRODUCTS["film_60x3"]["pack_area"]),
-            "p3030_cnt": packs_needed(target_all, PRODUCTS["panel_30x30_20"]["pack_area"]),
-            "p3060_10_cnt": packs_needed(target_all, 0.3 * 0.6 * 10),
-            "p3060_18_cnt": packs_needed(target_all, 0.3 * 0.6 * 18),
-        }
-
-    # одиночный товар
     cnt = packs_needed(target, p["pack_area"])
     covered = cnt * p["pack_area"]
     return {
@@ -254,58 +329,34 @@ def calc_counts_for_product(product_key: str, area: float, reserve_percent: floa
     }
 
 
-def render_counts(area: float, counts: Dict[str, Any]) -> str:
+def render_counts(base_area: float, openings_area: float, net_area: float, counts: Dict[str, Any]) -> str:
     rp = float(counts.get("reserve_percent", 0.10))
-    if rp > 0:
-        reserve_line = f"С запасом {int(rp * 100)}%: {fmt(counts['target_area'])} м²"
-    else:
-        reserve_line = f"Без запаса: {fmt(counts['target_area'])} м²"
-
-    header = (
-        f"📏 Площадь: {fmt(area)} м²\n"
-        f"🧮 {reserve_line}\n\n"
+    reserve_line = (
+        f"С запасом {int(rp * 100)}%: {fmt(counts['target_area'])} м²"
+        if rp > 0 else
+        f"Без запаса: {fmt(counts['target_area'])} м²"
     )
+
+    lines = [
+        f"📏 Площадь (введено): {fmt(base_area)} м²",
+        f"🪟 Проёмы: − {fmt(openings_area)} м²" if openings_area > 0 else "🪟 Проёмы: не вычитаются",
+        f"✅ Площадь к расчёту: {fmt(net_area)} м²",
+        f"🧮 {reserve_line}",
+        ""
+    ]
 
     if counts["type"] == "single":
-        return (
-            header
-            + f"🧱 {counts['title']}\n"
-            + f"Нужно: {counts['count']} {counts['pack_name']}\n"
-            + f"Покрытие: ~ {fmt(counts['covered'])} м²"
-        )
-
-    if counts["type"] == "auto_pick":
-        lines = [header + f"🧱 {counts['title']}"]
-        for v in counts["variants"]:
-            lines.append(f"• {v['label']}: {v['count']} упаковок (покроет ~ {fmt(v['covered'])} м²)")
-        lines.append("")
-        lines.append(f"✅ Рекомендация: {counts['best']['label']} — {counts['best']['count']} упаковок")
+        lines += [
+            f"🧱 {counts['title']}",
+            f"Нужно: {counts['count']} {counts['pack_name']}",
+            f"Покрытие: ~ {fmt(counts['covered'])} м²",
+        ]
         return "\n".join(lines)
 
-    return (
-        header
-        + "🧾 Расчёт по всем товарам:\n\n"
-        + f"1) Плёнка 60×3 м: {counts['film_cnt']} рулон(ов)\n"
-        + f"2) Панели 30×30 (20 шт/уп): {counts['p3030_cnt']} упаковок\n"
-        + f"3) Панели 30×60 (10 шт/уп): {counts['p3060_10_cnt']} упаковок\n"
-        + f"4) Панели 30×60 (18 шт/уп): {counts['p3060_18_cnt']} упаковок"
-    )
-
-
-def surfaces_total(data_surfaces: List[Dict[str, Any]]) -> float:
-    return sum(item["area"] for item in data_surfaces)
-
-
-def surfaces_summary(data_surfaces: List[Dict[str, Any]]) -> str:
-    if not data_surfaces:
-        return "Пока не добавлено ни одной поверхности."
-    lines = ["Добавленные поверхности:"]
-    for i, s in enumerate(data_surfaces, 1):
-        sides_txt = "2 стороны" if s["sides"] == 2 else "1 сторона"
-        lines.append(
-            f"{i}) {s['name']}: {fmt(s['length_cm'])}×{fmt(s['width_cm'])} см, {sides_txt} = {fmt(s['area'])} м²"
-        )
-    lines.append(f"\nИтого: {fmt(surfaces_total(data_surfaces))} м²")
+    lines.append(f"🧱 {counts['title']}")
+    for v in counts["variants"]:
+        lines.append(f"• {v['label']}: {v['count']} упаковок (покроет ~ {fmt(v['covered'])} м²)")
+    lines += ["", f"✅ Рекомендация: {counts['best']['label']} — {counts['best']['count']} упаковок"]
     return "\n".join(lines)
 
 
@@ -332,9 +383,16 @@ async def choose_product(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Неизвестный товар", show_alert=True)
         return
 
-    await state.update_data(product_key=key, surfaces=[])
+    await state.update_data(
+        product_key=key,
+        reserve_percent=0.10,
+        surfaces=[],
+        openings=[],
+        base_area=None,
+        current_opening_w=None,
+        current_opening_type=None
+    )
 
-    # ✅ Только для ламината — спросим про запас (вкл/выкл)
     if key == "laminate":
         default_on = bool(PRODUCTS["laminate"].get("waste_default_on", True))
         await state.update_data(reserve_percent=(0.10 if default_on else 0.0))
@@ -346,16 +404,15 @@ async def choose_product(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    # для остальных — всегда 10%
-    await state.update_data(reserve_percent=0.10)
     await state.set_state(CalcState.choose_input_mode)
     await callback.message.answer(
         f"Вы выбрали: {PRODUCTS[key]['title']}\n\nКак хотите ввести площадь?",
-        reply_markup=input_mode_kb()
+        reply_markup=input_mode_kb(key)
     )
     await callback.answer()
 
 
+# ---------- Ламинат: запас ----------
 @dp.callback_query(CalcState.choose_waste, F.data == "waste:toggle")
 async def waste_toggle(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -363,7 +420,7 @@ async def waste_toggle(callback: CallbackQuery, state: FSMContext):
     new_rp = 0.0 if rp > 0 else 0.10
     await state.update_data(reserve_percent=new_rp)
     await callback.message.answer(
-        f"Запас для ламината теперь: {'ВКЛ ✅ (10%)' if new_rp > 0 else 'ВЫКЛ ❌ (0%)'}",
+        f"Запас для ламината: {'ВКЛ ✅ (10%)' if new_rp > 0 else 'ВЫКЛ ❌ (0%)'}",
         reply_markup=waste_toggle_kb(new_rp > 0),
     )
     await callback.answer()
@@ -371,25 +428,38 @@ async def waste_toggle(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(CalcState.choose_waste, F.data == "waste:continue")
 async def waste_continue(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(CalcState.choose_input_mode)
-    await callback.message.answer("Как хотите ввести площадь?", reply_markup=input_mode_kb())
+    await state.set_state(CalcState.waiting_total_area)
+    await callback.message.answer(
+        "Введите площадь ПОЛА/СТЕНЫ в м² (например: 18.5)\n\n"
+        "Далее при желании можно вычесть проёмы (окна/двери)."
+    )
     await callback.answer()
 
 
-@dp.callback_query(F.data == "mode:total")
+# ---------- Режимы ввода площади ----------
+@dp.callback_query(CalcState.choose_input_mode, F.data == "mode:total")
 async def mode_total(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CalcState.waiting_total_area)
-    await callback.message.answer("Введите общую площадь в м² (например: 12.5)")
+    await callback.message.answer(
+        "Введите общую площадь в м² (например: 12.5)\n\n"
+        "Если есть окна/двери — на следующем шаге можно их вычесть."
+    )
     await callback.answer()
 
 
-@dp.callback_query(F.data == "mode:surfaces")
+@dp.callback_query(CalcState.choose_input_mode, F.data == "mode:surfaces")
 async def mode_surfaces(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if data.get("product_key") == "laminate":
+        await callback.answer("Для ламината этот режим отключён.", show_alert=True)
+        return
+
     await state.set_state(CalcState.waiting_surface_name)
     await callback.message.answer("Введите название поверхности (например: Стол, Полка 1, Дверца шкафа):")
     await callback.answer()
 
 
+# ---------- Ввод общей площади ----------
 @dp.message(CalcState.waiting_total_area)
 async def process_total_area(message: Message, state: FSMContext):
     try:
@@ -398,20 +468,15 @@ async def process_total_area(message: Message, state: FSMContext):
         await message.answer("Введите корректное число, например: 9.8")
         return
 
-    data = await state.get_data()
-    product_key = data.get("product_key", "all_products")
-    reserve_percent = float(data.get("reserve_percent", 0.10))
-
-    counts = calc_counts_for_product(product_key, area, reserve_percent)
-    await state.update_data(last_area=area, last_counts=counts)
-
+    await state.update_data(base_area=area, openings=[])
+    await state.set_state(CalcState.ask_openings)
     await message.answer(
-        render_counts(area, counts) + "\n\nХотите рассчитать стоимость в рублях?",
-        reply_markup=price_choice_kb()
+        "Нужно вычесть проёмы (окна/двери) из этой площади?",
+        reply_markup=openings_yesno_kb()
     )
-    await state.set_state(CalcState.waiting_ask_price)
 
 
+# ---------- Поверхности ----------
 @dp.message(CalcState.waiting_surface_name)
 async def surface_name(message: Message, state: FSMContext):
     name = message.text.strip()
@@ -502,8 +567,6 @@ async def clear_surfaces(callback: CallbackQuery, state: FSMContext):
 async def finish_surfaces(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     surfaces = data.get("surfaces", [])
-    product_key = data.get("product_key", "all_products")
-    reserve_percent = float(data.get("reserve_percent", 0.10))
 
     if not surfaces:
         await callback.message.answer("Вы ещё не добавили поверхности.")
@@ -511,15 +574,207 @@ async def finish_surfaces(callback: CallbackQuery, state: FSMContext):
         return
 
     total = surfaces_total(surfaces)
-    counts = calc_counts_for_product(product_key, total, reserve_percent)
-    await state.update_data(last_area=total, last_counts=counts)
+    await state.update_data(base_area=total, openings=[])
+    await state.set_state(CalcState.ask_openings)
 
-    text = surfaces_summary(surfaces) + "\n\n" + render_counts(total, counts)
-    await callback.message.answer(text + "\n\nХотите рассчитать стоимость в рублях?", reply_markup=price_choice_kb())
-    await state.set_state(CalcState.waiting_ask_price)
+    await callback.message.answer(
+        surfaces_summary(surfaces) + "\n\nНужно вычесть проёмы (окна/двери)?",
+        reply_markup=openings_yesno_kb()
+    )
     await callback.answer()
 
 
+# ---------- Проёмы ----------
+@dp.callback_query(CalcState.ask_openings, F.data == "openings:no")
+async def openings_no(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(openings=[])
+    await finalize_calc(callback.message, state)
+    await callback.answer()
+
+
+@dp.callback_query(CalcState.ask_openings, F.data == "openings:yes")
+async def openings_yes(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(openings=[])
+    await state.set_state(CalcState.waiting_opening_type)
+    await callback.message.answer(
+        "Выберите тип проёма:",
+        reply_markup=opening_mode_kb()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(CalcState.waiting_opening_type, F.data.startswith("opening_type:"))
+async def opening_type_pick(callback: CallbackQuery, state: FSMContext):
+    opening_type = callback.data.split(":")[1]  # door/window
+    await state.update_data(current_opening_type=opening_type)
+    title = "двери" if opening_type == "door" else "окна"
+    await callback.message.answer(
+        f"Выберите пресет для {title} или введите размер вручную:",
+        reply_markup=opening_presets_kb(opening_type)
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("opening_preset:"))
+async def opening_preset_pick(callback: CallbackQuery, state: FSMContext):
+    # opening_preset:{type}:{w}:{h}
+    _, opening_type, w_str, h_str = callback.data.split(":")
+    w_m = float(w_str)
+    h_m = float(h_str)
+    area = w_m * h_m
+
+    data = await state.get_data()
+    openings = data.get("openings", [])
+    openings.append({
+        "type": opening_type,
+        "w_m": w_m,
+        "h_m": h_m,
+        "area": area
+    })
+    await state.update_data(openings=openings)
+
+    icon = "🚪" if opening_type == "door" else "🪟"
+    type_ru = "Дверь" if opening_type == "door" else "Окно"
+
+    await callback.message.answer(
+        f"✅ Добавлено: {icon} {type_ru} {fmt(w_m)}×{fmt(h_m)} м = {fmt(area)} м²\n\n"
+        f"{openings_summary(openings)}",
+        reply_markup=opening_mode_kb()
+    )
+    await state.set_state(CalcState.waiting_opening_type)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("opening_manual:"))
+async def opening_manual_pick(callback: CallbackQuery, state: FSMContext):
+    opening_type = callback.data.split(":")[1]  # door/window
+    await state.update_data(current_opening_type=opening_type)
+    label = "двери" if opening_type == "door" else "окна"
+
+    await state.set_state(CalcState.waiting_opening_width)
+    await callback.message.answer(
+        f"Введите ШИРИНУ {label}.\nМожно: 1.2 (м) или 120 см.\nЕсли просто число 120 — это будет 120 см."
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "opening:back_to_type")
+async def opening_back_to_type(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(CalcState.waiting_opening_type)
+    await callback.message.answer(
+        "Выберите тип проёма:",
+        reply_markup=opening_mode_kb()
+    )
+    await callback.answer()
+
+
+@dp.message(CalcState.waiting_opening_width)
+async def opening_width(message: Message, state: FSMContext):
+    try:
+        w_m = parse_length_to_m(message.text)
+    except Exception:
+        await message.answer("Не понял ширину. Пример: 1.2 или 120 см")
+        return
+
+    await state.update_data(current_opening_w=w_m)
+    await state.set_state(CalcState.waiting_opening_height)
+    await message.answer("Теперь введите ВЫСОТУ (например: 2.1 или 210 см)")
+
+
+@dp.message(CalcState.waiting_opening_height)
+async def opening_height(message: Message, state: FSMContext):
+    try:
+        h_m = parse_length_to_m(message.text)
+    except Exception:
+        await message.answer("Не понял высоту. Пример: 2.1 или 210 см")
+        return
+
+    data = await state.get_data()
+    w_m = float(data["current_opening_w"])
+    opening_type = data.get("current_opening_type", "window")
+    area = w_m * h_m
+
+    openings = data.get("openings", [])
+    openings.append({
+        "type": opening_type,
+        "w_m": w_m,
+        "h_m": h_m,
+        "area": area
+    })
+
+    await state.update_data(
+        openings=openings,
+        current_opening_w=None,
+        current_opening_type=None
+    )
+
+    icon = "🚪" if opening_type == "door" else "🪟"
+    type_ru = "Дверь" if opening_type == "door" else "Окно"
+
+    await message.answer(
+        f"✅ Добавлено: {icon} {type_ru} {fmt(w_m)}×{fmt(h_m)} м = {fmt(area)} м²\n\n"
+        f"{openings_summary(openings)}",
+        reply_markup=opening_mode_kb()
+    )
+    await state.set_state(CalcState.waiting_opening_type)
+
+
+@dp.callback_query(F.data == "opening:clear")
+async def opening_clear(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(openings=[], current_opening_type=None, current_opening_w=None)
+    await state.set_state(CalcState.waiting_opening_type)
+    await callback.message.answer(
+        "Проёмы очищены. Выберите тип проёма:",
+        reply_markup=opening_mode_kb()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "opening:finish")
+async def opening_finish(callback: CallbackQuery, state: FSMContext):
+    await finalize_calc(callback.message, state)
+    await callback.answer()
+
+
+# ---------- Финал расчёта ----------
+async def finalize_calc(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    product_key = data["product_key"]
+    reserve_percent = float(data.get("reserve_percent", 0.10))
+
+    base_area = float(data.get("base_area") or 0.0)
+    openings = data.get("openings", [])
+    openings_area = openings_total(openings)
+    net_area = max(base_area - openings_area, 0.0)
+
+    if net_area <= 0:
+        await message.answer(
+            "После вычета проёмов площадь стала 0 м².\n"
+            "Проверьте данные и попробуйте ещё раз.",
+            reply_markup=main_menu_kb()
+        )
+        await state.clear()
+        return
+
+    counts = calc_counts_for_product(product_key, net_area, reserve_percent)
+
+    await state.update_data(
+        last_base_area=base_area,
+        last_openings_area=openings_area,
+        last_net_area=net_area,
+        last_counts=counts,
+    )
+
+    await message.answer(
+        render_counts(base_area, openings_area, net_area, counts)
+        + "\n\nХотите рассчитать стоимость в рублях?",
+        reply_markup=price_choice_kb()
+    )
+    await state.set_state(CalcState.waiting_ask_price)
+
+
+# ---------- Стоимость ----------
 @dp.callback_query(CalcState.waiting_ask_price, F.data == "price:no")
 async def price_no(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Готово ✅\nНовый расчёт:", reply_markup=main_menu_kb())
@@ -529,20 +784,8 @@ async def price_no(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(CalcState.waiting_ask_price, F.data == "price:yes")
 async def price_yes(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    counts = data.get("last_counts", {})
-    if not counts:
-        await callback.message.answer("Сначала выполните расчёт количества.")
-        await callback.answer()
-        return
-
-    if counts["type"] in ("single", "auto_pick"):
-        await callback.message.answer("Введите цену за 1 упаковку/рулон (например: 790)")
-        await state.set_state(CalcState.waiting_price_single)
-    else:
-        await callback.message.answer("Введите цену за 1 рулон плёнки 60×3 м (₽):")
-        await state.set_state(CalcState.waiting_price_all_film)
-
+    await callback.message.answer("Введите цену за 1 упаковку/рулон (например: 790)")
+    await state.set_state(CalcState.waiting_price_single)
     await callback.answer()
 
 
@@ -571,74 +814,8 @@ async def handle_price_single(message: Message, state: FSMContext):
     await state.clear()
 
 
-@dp.message(CalcState.waiting_price_all_film)
-async def handle_price_all_film(message: Message, state: FSMContext):
-    try:
-        await state.update_data(price_film=parse_float(message.text))
-    except Exception:
-        await message.answer("Введите корректную цену.")
-        return
-    await state.set_state(CalcState.waiting_price_all_30x30)
-    await message.answer("Введите цену за 1 упаковку панелей 30×30 (20 шт/уп), ₽:")
-
-
-@dp.message(CalcState.waiting_price_all_30x30)
-async def handle_price_all_3030(message: Message, state: FSMContext):
-    try:
-        await state.update_data(price_3030=parse_float(message.text))
-    except Exception:
-        await message.answer("Введите корректную цену.")
-        return
-    await state.set_state(CalcState.waiting_price_all_30x60_10)
-    await message.answer("Введите цену за 1 упаковку панелей 30×60 (10 шт/уп), ₽:")
-
-
-@dp.message(CalcState.waiting_price_all_30x60_10)
-async def handle_price_all_3060_10(message: Message, state: FSMContext):
-    try:
-        await state.update_data(price_3060_10=parse_float(message.text))
-    except Exception:
-        await message.answer("Введите корректную цену.")
-        return
-    await state.set_state(CalcState.waiting_price_all_30x60_18)
-    await message.answer("Введите цену за 1 упаковку панелей 30×60 (18 шт/уп), ₽:")
-
-
-@dp.message(CalcState.waiting_price_all_30x60_18)
-async def handle_price_all_3060_18(message: Message, state: FSMContext):
-    try:
-        price_3060_18 = parse_float(message.text)
-    except Exception:
-        await message.answer("Введите корректную цену.")
-        return
-
-    data = await state.get_data()
-    counts = data["last_counts"]
-
-    film_cost = counts["film_cnt"] * data["price_film"]
-    p3030_cost = counts["p3030_cnt"] * data["price_3030"]
-    p3060_10_cost = counts["p3060_10_cnt"] * data["price_3060_10"]
-    p3060_18_cost = counts["p3060_18_cnt"] * price_3060_18
-
-    total_if_10 = film_cost + p3030_cost + p3060_10_cost
-    total_if_18 = film_cost + p3030_cost + p3060_18_cost
-
-    await message.answer(
-        "💰 Стоимость по всем товарам:\n\n"
-        f"1) Плёнка: {money(film_cost)}\n"
-        f"2) Панели 30×30: {money(p3030_cost)}\n"
-        f"3) Панели 30×60 (10): {money(p3060_10_cost)}\n"
-        f"4) Панели 30×60 (18): {money(p3060_18_cost)}\n\n"
-        f"Итого с 30×60 (10): {money(total_if_10)}\n"
-        f"Итого с 30×60 (18): {money(total_if_18)}\n\n"
-        "Новый расчёт 👇",
-        reply_markup=main_menu_kb()
-    )
-    await state.clear()
-
-
 # =========================
-# FLASK (Render health)
+# FLASK (Render health check)
 # =========================
 app = Flask(__name__)
 
@@ -660,6 +837,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
 
