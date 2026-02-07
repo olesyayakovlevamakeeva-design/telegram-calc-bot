@@ -23,6 +23,13 @@ if not BOT_TOKEN:
 
 
 # =========================
+# STORE LINKS (ваши магазины)
+# =========================
+WB_STORE_URL = "https://www.wildberries.ru/seller/1284128"
+OZON_STORE_URL = "https://ozon.ru/t/R9dELyu"
+
+
+# =========================
 # PRODUCTS
 # =========================
 PRODUCTS: Dict[str, Dict[str, Any]] = {
@@ -178,7 +185,6 @@ def opening_presets_kb(opening_type: str):
     kb = InlineKeyboardBuilder()
 
     if opening_type == "door":
-        # (ширина, высота) в метрах
         presets = [
             ("🚪 70×200 см", "0.7", "2.0"),
             ("🚪 80×200 см", "0.8", "2.0"),
@@ -200,6 +206,14 @@ def opening_presets_kb(opening_type: str):
     kb.button(text="⬅️ Назад к выбору типа", callback_data="opening:back_to_type")
     kb.button(text="✅ Готово, рассчитать", callback_data="opening:finish")
     kb.button(text="🧹 Очистить проёмы", callback_data="opening:clear")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def buy_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🟣 Купить на Wildberries", url=WB_STORE_URL)
+    kb.button(text="🔵 Купить на Ozon", url=OZON_STORE_URL)
     kb.adjust(1)
     return kb.as_markup()
 
@@ -336,17 +350,19 @@ def render_counts(base_area: float, openings_area: float, net_area: float, count
     )
 
     lines = [
+        "📊 Результат расчёта",
+        "",
         f"📏 Площадь (введено): {fmt(base_area)} м²",
         f"🪟 Проёмы: − {fmt(openings_area)} м²" if openings_area > 0 else "🪟 Проёмы: не вычитаются",
         f"✅ Площадь к расчёту: {fmt(net_area)} м²",
         f"🧮 {reserve_line}",
-        ""
+        "",
     ]
 
     if counts["type"] == "single":
         lines += [
             f"🧱 {counts['title']}",
-            f"Нужно: {counts['count']} {counts['pack_name']}",
+            f"📦 Нужно: {counts['count']} {counts['pack_name']}",
             f"Покрытие: ~ {fmt(counts['covered'])} м²",
         ]
         return "\n".join(lines)
@@ -594,10 +610,7 @@ async def openings_no(callback: CallbackQuery, state: FSMContext):
 async def openings_yes(callback: CallbackQuery, state: FSMContext):
     await state.update_data(openings=[])
     await state.set_state(CalcState.waiting_opening_type)
-    await callback.message.answer(
-        "Выберите тип проёма:",
-        reply_markup=opening_mode_kb()
-    )
+    await callback.message.answer("Выберите тип проёма:", reply_markup=opening_mode_kb())
     await callback.answer()
 
 
@@ -615,7 +628,6 @@ async def opening_type_pick(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("opening_preset:"))
 async def opening_preset_pick(callback: CallbackQuery, state: FSMContext):
-    # opening_preset:{type}:{w}:{h}
     _, opening_type, w_str, h_str = callback.data.split(":")
     w_m = float(w_str)
     h_m = float(h_str)
@@ -623,12 +635,7 @@ async def opening_preset_pick(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     openings = data.get("openings", [])
-    openings.append({
-        "type": opening_type,
-        "w_m": w_m,
-        "h_m": h_m,
-        "area": area
-    })
+    openings.append({"type": opening_type, "w_m": w_m, "h_m": h_m, "area": area})
     await state.update_data(openings=openings)
 
     icon = "🚪" if opening_type == "door" else "🪟"
@@ -645,10 +652,9 @@ async def opening_preset_pick(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("opening_manual:"))
 async def opening_manual_pick(callback: CallbackQuery, state: FSMContext):
-    opening_type = callback.data.split(":")[1]  # door/window
+    opening_type = callback.data.split(":")[1]
     await state.update_data(current_opening_type=opening_type)
     label = "двери" if opening_type == "door" else "окна"
-
     await state.set_state(CalcState.waiting_opening_width)
     await callback.message.answer(
         f"Введите ШИРИНУ {label}.\nМожно: 1.2 (м) или 120 см.\nЕсли просто число 120 — это будет 120 см."
@@ -659,10 +665,7 @@ async def opening_manual_pick(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "opening:back_to_type")
 async def opening_back_to_type(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CalcState.waiting_opening_type)
-    await callback.message.answer(
-        "Выберите тип проёма:",
-        reply_markup=opening_mode_kb()
-    )
+    await callback.message.answer("Выберите тип проёма:", reply_markup=opening_mode_kb())
     await callback.answer()
 
 
@@ -693,18 +696,9 @@ async def opening_height(message: Message, state: FSMContext):
     area = w_m * h_m
 
     openings = data.get("openings", [])
-    openings.append({
-        "type": opening_type,
-        "w_m": w_m,
-        "h_m": h_m,
-        "area": area
-    })
+    openings.append({"type": opening_type, "w_m": w_m, "h_m": h_m, "area": area})
 
-    await state.update_data(
-        openings=openings,
-        current_opening_w=None,
-        current_opening_type=None
-    )
+    await state.update_data(openings=openings, current_opening_w=None, current_opening_type=None)
 
     icon = "🚪" if opening_type == "door" else "🪟"
     type_ru = "Дверь" if opening_type == "door" else "Окно"
@@ -721,10 +715,7 @@ async def opening_height(message: Message, state: FSMContext):
 async def opening_clear(callback: CallbackQuery, state: FSMContext):
     await state.update_data(openings=[], current_opening_type=None, current_opening_w=None)
     await state.set_state(CalcState.waiting_opening_type)
-    await callback.message.answer(
-        "Проёмы очищены. Выберите тип проёма:",
-        reply_markup=opening_mode_kb()
-    )
+    await callback.message.answer("Проёмы очищены. Выберите тип проёма:", reply_markup=opening_mode_kb())
     await callback.answer()
 
 
@@ -748,8 +739,7 @@ async def finalize_calc(message: Message, state: FSMContext):
 
     if net_area <= 0:
         await message.answer(
-            "После вычета проёмов площадь стала 0 м².\n"
-            "Проверьте данные и попробуйте ещё раз.",
+            "После вычета проёмов площадь стала 0 м².\nПроверьте данные и попробуйте ещё раз.",
             reply_markup=main_menu_kb()
         )
         await state.clear()
@@ -764,11 +754,14 @@ async def finalize_calc(message: Message, state: FSMContext):
         last_counts=counts,
     )
 
-    await message.answer(
-        render_counts(base_area, openings_area, net_area, counts)
-        + "\n\nХотите рассчитать стоимость в рублях?",
-        reply_markup=price_choice_kb()
-    )
+    # 1) Пишем расчёт
+    await message.answer(render_counts(base_area, openings_area, net_area, counts))
+
+    # 2) Премиальная кнопка покупки (магазины)
+    await message.answer("🛒 Официальный магазин the_all4u:", reply_markup=buy_kb())
+
+    # 3) Вопрос о стоимости
+    await message.answer("Хотите рассчитать стоимость в рублях?", reply_markup=price_choice_kb())
     await state.set_state(CalcState.waiting_ask_price)
 
 
@@ -808,7 +801,9 @@ async def handle_price_single(message: Message, state: FSMContext):
         total_cost = qty * price
         text = f"💰 Стоимость ({label}):\n{qty} × {fmt(price)} = {money(total_cost)}"
 
-    await message.answer(text + "\n\nНовый расчёт 👇", reply_markup=main_menu_kb())
+    await message.answer(text)
+    await message.answer("🛒 Официальный магазин the_all4u:", reply_markup=buy_kb())
+    await message.answer("\nНовый расчёт 👇", reply_markup=main_menu_kb())
     await state.clear()
 
 
@@ -830,10 +825,13 @@ def run_web():
 
 async def main():
     bot = Bot(BOT_TOKEN)
+
+    # На всякий случай: убираем вебхук и хвосты апдейтов при старте (стабильнее после деплоев)
+    await bot.delete_webhook(drop_pending_updates=True)
+
     threading.Thread(target=run_web, daemon=True).start()
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=True)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
