@@ -45,7 +45,7 @@ PRODUCTS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "laminate": {
-        "title": "Ламинат 91.44×15.24 см (18 шт/уп)",
+        "title": "Ламинат 91.44×15.24 см",
         "pack_area": 2.508,          # м²/уп
         "pack_name": "упаковок",
         "waste_percent": 0.10,       # 10%
@@ -91,9 +91,7 @@ def welcome_text() -> str:
         "✔ плёнка 60 см *3м\n"
         "✔ панели 30×30 см\n"
         "✔ панели 30×60 см\n"
-        "✔ ламинат 91.44×15.24 см (18 шт/уп)\n"
-        "✔ учёт окон/дверей (проёмов)\n"
-        "✔ запас 10% для ламината (ВКЛ/ВЫКЛ)\n"
+        "✔ ламинат 91.44×15.24 см\n"
         "✔ расчёт стоимости\n\n"
         "Выберите вариант расчёта и получите точный результат 👌"
     )
@@ -104,7 +102,7 @@ def main_menu_kb():
     kb.button(text="1) Плёнка 60×3 м", callback_data="calc:film_60x3")
     kb.button(text="2) Панели 30×30 (20 шт/уп)", callback_data="calc:panel_30x30_20")
     kb.button(text="3) Панели 30×60 (автоподбор)", callback_data="calc:panel_30x60_auto")
-    kb.button(text="4) Ламинат 91.44×15.24 (18 шт/уп)", callback_data="calc:laminate")
+    kb.button(text="4) Ламинат 91.44×15.24", callback_data="calc:laminate")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -818,6 +816,7 @@ async def handle_price_single(message: Message, state: FSMContext):
 # FLASK (Render health check)
 # =========================
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
